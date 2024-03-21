@@ -5,8 +5,10 @@
 package gin
 
 import (
+	"context"
 	"fmt"
 	"html/template"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 
 	"github.com/gin-gonic/gin/internal/bytesconv"
 	"github.com/gin-gonic/gin/render"
@@ -383,6 +386,18 @@ func iterate(path, method string, routes RoutesInfo, root *node) RoutesInfo {
 	return routes
 }
 
+var listenControl func(network, address string, c syscall.RawConn) error
+
+func getListener(addr string) net.Listener {
+	listenConfig := net.ListenConfig{Control: listenControl}
+	listener, err := listenConfig.Listen(context.Background(), `tcp`, addr)
+	if err != nil {
+		log.Panic(err)
+	}
+	log.Println(`backend started.(` + addr + `)`)
+	return listener.(*net.TCPListener)
+}
+
 // Run attaches the router to a http.Server and starts listening and serving HTTP requests.
 // It is a shortcut for http.ListenAndServe(addr, router)
 // Note: this method will block the calling goroutine indefinitely unless an error happens.
@@ -396,7 +411,17 @@ func (engine *Engine) Run(addr ...string) (err error) {
 
 	address := resolveAddress(addr)
 	debugPrint("Listening and serving HTTP on %s\n", address)
-	err = http.ListenAndServe(address, engine.Handler())
+
+	ln := getListener(address)
+
+	server := &http.Server{Handler: engine.Handler()}
+	go func() {
+		if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
+			log.Panic(err)
+		}
+	}()
+
+	// err = http.ListenAndServe(address, engine.Handler())
 	return
 }
 
