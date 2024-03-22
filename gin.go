@@ -12,11 +12,14 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 
 	"github.com/gin-gonic/gin/internal/bytesconv"
 	"github.com/gin-gonic/gin/render"
@@ -386,17 +389,7 @@ func iterate(path, method string, routes RoutesInfo, root *node) RoutesInfo {
 	return routes
 }
 
-var listenControl func(network, address string, c syscall.RawConn) error
 
-func getListener(addr string) net.Listener {
-	listenConfig := net.ListenConfig{Control: listenControl}
-	listener, err := listenConfig.Listen(context.Background(), `tcp`, addr)
-	if err != nil {
-		log.Panic(err)
-	}
-	log.Println(`backend started.(` + addr + `)`)
-	return listener.(*net.TCPListener)
-}
 
 // Run attaches the router to a http.Server and starts listening and serving HTTP requests.
 // It is a shortcut for http.ListenAndServe(addr, router)
@@ -415,16 +408,33 @@ func (engine *Engine) Run(addr ...string) (err error) {
 	ln := getListener(address)
 
 	server := &http.Server{Handler: engine.Handler()}
+
+	ch := make(chan os.Signal)
+	signal.Notify(ch, syscall.SIGTERM, os.Interrupt)
+
+
 	go func() {
 		if err := server.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Panic(err)
 		}
 	}()
-
+	<-ch
+	gracefulShutdown(server)
 	// err = http.ListenAndServe(address, engine.Handler())
 	return
 }
-
+func gracefulShutdown(server *http.Server) {
+	if runtime.GOOS != "linux" {
+		return
+	}
+	c, cancel := context.WithDeadline(context.Background(), time.Now().Add(7*time.Second))
+	defer cancel()
+	if err := server.Shutdown(c); err == nil {
+		log.Println(`shutdown`)
+	} else {
+		log.Println("shutdown error: ", err)
+	}
+}
 func (engine *Engine) prepareTrustedCIDRs() ([]*net.IPNet, error) {
 	if engine.trustedProxies == nil {
 		return nil, nil
